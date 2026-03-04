@@ -318,7 +318,7 @@ const [showExportMenu, setShowExportMenu] = useState(false);
 
 const [copyDone, setCopyDone] = useState(false);
 
-const [patients, setPatients] = useState<Patient[]>([]);
+const [patients, setPatients] = useState([]);
 
 const [showNextAppointment, setShowNextAppointment] = useState(false);
 const [nextVisit, setNextVisit] = useState<{ date: string; time: string }>({
@@ -584,21 +584,17 @@ const addPatient = async (patient: {
   gender?: "ذكر" | "أنثى";
 }) => {
   try {
-    await fetch(`${API_URL}/patients`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({
-        name: patient.name,
-        phone: patient.phone,
-        age: patient.age ?? 0,
-        gender: patient.gender ?? "ذكر",
-      }),
-    });
+    const newPatient = {
+      id: Date.now().toString(),
+      name: patient.name,
+      phone: patient.phone,
+      age: patient.age ?? 0,
+      gender: patient.gender ?? "ذكر",
+      treatmentRecords: [],
+      createdAt: new Date().toISOString(),
+    };
 
-    // ✅ إعادة تحميل الداتا من المصدر الحقيقي
-    await loadPatients();
+    setPatients((prev: any[]) => [newPatient, ...prev]);
 
   } catch (err) {
     console.error("خطأ في إضافة المريض", err);
@@ -729,16 +725,26 @@ const upcomingAppointments = useMemo(() => {
       return appointmentDateTime > now;
     })
     .map(p => {
-      const [d, t] = p.nextAppointment!.split('T');
+      const [d, t] = p.nextAppointment.split("T");
+
+      const lastTreatment =
+        p.treatmentRecords && p.treatmentRecords.length > 0
+          ? p.treatmentRecords[p.treatmentRecords.length - 1]
+          : null;
+
       return {
         id: p.id,
         patientName: p.name,
         date: d,
         time: t,
-        type: p.treatmentRecords[p.treatmentRecords.length - 1]?.type || 'مراجعة'
+        type: lastTreatment?.type || "مراجعة"
       };
     })
-    .sort((a, b) => new Date(a.date + "T" + a.time).getTime() - new Date(b.date + "T" + b.time).getTime())
+    .sort(
+      (a, b) =>
+        new Date(a.date + "T" + a.time).getTime() -
+        new Date(b.date + "T" + b.time).getTime()
+    )
     .slice(0, 5);
 }, [patients]);
 
@@ -808,46 +814,26 @@ const handleAddPatient = async () => {
   if (!newPatient.name || !newPatient.phone) return;
 
   try {
-    // 1️⃣ إضافة المريض
-    await fetch(`${API_URL}/patients`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: newPatient.name,
-        phone: newPatient.phone,
-        age: Number(newPatient.age) || 0,
-        gender: newPatient.gender || "ذكر",
-      }),
-    });
 
     const patientName = newPatient.name;
 
-    // 🔔 Notification للسيرفر (Teal Badge)
-    await fetch(`${API_URL}/notifications`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: `👩‍💼 تم تسجيل مريض جديد 
-          <span style="
-            background:#ccfbf1;
-            color:#0f766e;
-            padding:3px 12px;
-            border-radius:999px;
-            font-weight:700;
-            display:inline-block;
-            margin-right:6px;
-          ">
-            ${patientName}
-          </span>`,
-        role: "all",
-      }),
-    });
+    // 1️⃣ إنشاء المريض محلياً
+    const patient = {
+      id: Date.now().toString(),
+      name: newPatient.name,
+      phone: newPatient.phone,
+      age: Number(newPatient.age) || 0,
+      gender: newPatient.gender || "ذكر",
+      treatmentRecords: [],
+      nextAppointment: null,
+      createdAt: new Date().toISOString(),
+    };
+
+    // 2️⃣ إضافته في state
+    setPatients((prev: any[]) => [patient, ...prev]);
 
     // 🔔 Toast محلي
     notify(`👩‍💼 تم إضافة المريض ${patientName}`);
-
-    // ✅ إعادة تحميل
-    await loadPatients();
 
     // 🧹 تنظيف
     setIsAddPatientModalOpen(false);
@@ -867,64 +853,55 @@ const handleDeleteProcedure = async (treatmentId: string) => {
 
   const patientName = editingPatient.name;
 
-  // 1️⃣ حذف من الداتا بيز
-  await fetch(
-    `${API_URL}/patients/${editingPatient.id}/treatments/${treatmentId}`,
-    { method: "DELETE" }
-  );
+  try {
 
-  // 🔔 Notification للسيرفر (Badge Style)
-  await fetch(`${API_URL}/notifications`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: `🗑️ تم حذف إجراء للمريض 
-        <span style="
-          background:#ccfbf1;
-          color:#0f766e;
-          padding:3px 12px;
-          border-radius:999px;
-          font-weight:700;
-          display:inline-block;
-          margin-right:6px;
-        ">
-          ${patientName}
-        </span>`,
-      role: "all",
-    }),
-  });
+    // 1️⃣ تحديث editingPatient
+    setEditingPatient(prev =>
+      prev
+        ? {
+            ...prev,
+            treatmentRecords: prev.treatmentRecords.filter(
+              r => r.id !== treatmentId
+            ),
+          }
+        : prev
+    );
 
-  // 🔔 Toast محلي
-  notify(`🗑️ تم حذف إجراء للمريض ${patientName}`);
+    // 2️⃣ تحديث patients list بالكامل
+    setPatients(prev =>
+      prev.map(p =>
+        p.id === editingPatient.id
+          ? {
+              ...p,
+              treatmentRecords: p.treatmentRecords.filter(
+                r => r.id !== treatmentId
+              ),
+            }
+          : p
+      )
+    );
 
-  // 2️⃣ تحديث الواجهة فورًا
-  setEditingPatient(prev =>
-    prev
-      ? {
-          ...prev,
-          treatmentRecords: prev.treatmentRecords.filter(
-            r => r.id !== treatmentId
-          ),
-        }
-      : prev
-  );
+    // 🔔 Toast محلي
+    notify(`🗑️ تم حذف إجراء للمريض ${patientName}`);
 
-  // 3️⃣ لو كنت بتعدل نفس الإجراء → اخرج من وضع التعديل
-  if (editingTreatment?.id === treatmentId) {
-    setEditingTreatment(null);
-    setNewProcedure({
-      type: "",
-      tooth: "",
-      diagnosis: "",
-      date: new Date().toISOString().split("T")[0],
-      cost: 0,
-      paid: 0,
-      payments: [],
-    });
+    // 3️⃣ لو كنت بتعدل نفس الإجراء → اخرج من وضع التعديل
+    if (editingTreatment?.id === treatmentId) {
+      setEditingTreatment(null);
+      setNewProcedure({
+        type: "",
+        tooth: "",
+        diagnosis: "",
+        date: new Date().toISOString().split("T")[0],
+        cost: 0,
+        paid: 0,
+        payments: [],
+      });
+    }
+
+  } catch (err) {
+    console.error(err);
+    alert("حصل خطأ أثناء حذف الإجراء");
   }
-
-  // 4️⃣ مزامنة نهائية
-  await loadPatients();
 };
 
 
@@ -937,37 +914,16 @@ const handleDeletePatient = async (id: string) => {
     const patientToDelete = patients.find(p => p.id === id);
     const patientName = patientToDelete?.name || "";
 
-    // 1️⃣ حذف من الداتا بيز
-    await fetch(`${API_URL}/patients/${id}`, {
-      method: "DELETE",
-    });
+    // 1️⃣ حذف المريض من state
+    setPatients(prev => prev.filter(p => p.id !== id));
 
-    // 🔔 Notification لكل الشاشات (Badge Style)
-    await fetch(`${API_URL}/notifications`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: `🗑️ تم حذف المريض 
-          <span style="
-            background:#ccfbf1;
-            color:#0f766e;
-            padding:3px 12px;
-            border-radius:999px;
-            font-weight:700;
-            display:inline-block;
-            margin-right:6px;
-          ">
-            ${patientName}
-          </span>`,
-        role: "all",
-      }),
-    });
+    // لو المريض المفتوح في المودال هو نفسه المحذوف
+    if (editingPatient?.id === id) {
+      setEditingPatient(null);
+    }
 
     // 🔔 Toast محلي
     notify(`🗑️ تم حذف المريض ${patientName}`);
-
-    // ✅ تحديث المصدر الوحيد للداتا
-    await loadPatients();
 
   } catch (err) {
     console.error("خطأ في حذف المريض", err);
@@ -981,62 +937,45 @@ const handleUpdatePatientInfo = async () => {
 
   const patientName = editingPatient.name;
 
-  await fetch(`${API_URL}/patients/${editingPatient.id}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      name: editingPatient.name,
-      phone: editingPatient.phone,
-      age: editingPatient.age,
-      gender: editingPatient.gender,
-    }),
-  });
+  try {
 
-  // 🔔 Notification للسيرفر (Badge Style)
-  await fetch(`${API_URL}/notifications`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message: `✏️ تم تحديث بيانات المريض 
-        <span style="
-          background:#ccfbf1;
-          color:#0f766e;
-          padding:3px 12px;
-          border-radius:999px;
-          font-weight:700;
-          display:inline-block;
-          margin-right:6px;
-        ">
-          ${patientName}
-        </span>`,
-      role: "all",
-    }),
-  });
+    // 1️⃣ تحديث قائمة المرضى
+    setPatients(prev =>
+      prev.map(p =>
+        p.id === editingPatient.id
+          ? {
+              ...p,
+              name: editingPatient.name,
+              phone: editingPatient.phone,
+              age: editingPatient.age,
+              gender: editingPatient.gender,
+            }
+          : p
+      )
+    );
 
-  // إعادة تحميل المرضى
-  const res = await fetch(`${API_URL}/patients`);
-  const data = await res.json();
+    // 2️⃣ تحديث المريض المفتوح في المودال
+    setEditingPatient(prev =>
+      prev
+        ? {
+            ...prev,
+            name: editingPatient.name,
+            phone: editingPatient.phone,
+            age: editingPatient.age,
+            gender: editingPatient.gender,
+          }
+        : prev
+    );
 
-  setPatients(
-    data.map((p: any) => ({
-      id: p.id.toString(),
-      name: p.name,
-      phone: p.phone,
-      age: p.age ?? 0,
-      gender: p.gender ?? "ذكر",
-      treatmentRecords: [],
-      totalAmount: 0,
-      paidAmount: 0,
-      lastVisit: new Date().toISOString().split("T")[0],
-    }))
-  );
+    // إغلاق المودال
+    setIsEditPatientInfoModalOpen(false);
 
-  setIsEditPatientInfoModalOpen(false);
+    // 🔔 Toast محلي
+    notify(`✏️ تم تحديث بيانات المريض ${patientName}`);
 
-  // 🔔 Toast محلي
-  notify(`✏️ تم تحديث بيانات المريض ${patientName}`);
+  } catch (err) {
+    console.error("خطأ في تحديث بيانات المريض", err);
+  }
 };
 
 
@@ -1051,7 +990,7 @@ const handleSaveAllChanges = async () => {
   if (!editingPatient) return;
 
   try {
-    // 🟢 جهزي القيمة مرة واحدة
+
     const appointmentValue =
       nextVisit?.date
         ? nextVisit.time
@@ -1059,17 +998,9 @@ const handleSaveAllChanges = async () => {
           : `${nextVisit.date}T00:00`
         : "";
 
-    // 🟢 لو في موعد → ابعتيه للسيرفر
     if (appointmentValue) {
-      await fetch(`${API_URL}/patients/${editingPatient.id}/appointment`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nextAppointment: appointmentValue,
-        }),
-      });
 
-      // ✅ تحديث فوري في سجل الإجراء (UI)
+      // 1️⃣ تحديث المريض المفتوح
       setEditingPatient(prev =>
         prev
           ? {
@@ -1078,10 +1009,19 @@ const handleSaveAllChanges = async () => {
             }
           : prev
       );
-    }
 
-    // 🟢 إعادة تحميل الداتا الحقيقية (realtime + باقي الشاشات)
-    await loadPatients();
+      // 2️⃣ تحديث قائمة المرضى
+      setPatients(prev =>
+        prev.map(p =>
+          p.id === editingPatient.id
+            ? {
+                ...p,
+                nextAppointment: appointmentValue,
+              }
+            : p
+        )
+      );
+    }
 
     // 🧹 تنظيف الحالات
     setNextVisit(null);
@@ -1102,22 +1042,21 @@ const handleAddNewProcedure = async () => {
 
   const patientName = editingPatient.name;
   const procedureType = newProcedure.type;
-const toothNumber =
-  newProcedure.tooth && newProcedure.tooth !== "-"
-    ? newProcedure.tooth
-        .split(",")
-        .map(t => {
-          const clean = t.trim();
-          const map: any = { "1":"UR", "2":"UL", "3":"LL", "4":"LR" };
-          return clean.length === 2
-            ? `${map[clean[0]]}${clean[1]}`
-            : clean;
-        })
-        .join(", ")
-    : "-";
+
+  const toothNumber =
+    newProcedure.tooth && newProcedure.tooth !== "-"
+      ? newProcedure.tooth
+          .split(",")
+          .map(t => {
+            const clean = t.trim();
+            const map: any = { "1": "UR", "2": "UL", "3": "LL", "4": "LR" };
+            return clean.length === 2 ? `${map[clean[0]]}${clean[1]}` : clean;
+          })
+          .join(", ")
+      : "-";
 
   try {
-    const tempTreatment = {
+    const newTreatment = {
       id: `temp-${Date.now()}`,
       type: newProcedure.type!,
       tooth: newProcedure.tooth || "-",
@@ -1128,75 +1067,26 @@ const toothNumber =
       payments: [],
     };
 
-    // تحديث فوري في المودال
+    // 1️⃣ تحديث المريض المفتوح في المودال
     setEditingPatient(prev => {
       if (!prev) return prev;
       return {
         ...prev,
-        treatmentRecords: [tempTreatment, ...prev.treatmentRecords],
+        treatmentRecords: [newTreatment, ...prev.treatmentRecords],
       };
     });
 
-    // إرسال للسيرفر
-    await fetch(`${API_URL}/patients/${editingPatient.id}/treatments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: newProcedure.type,
-        tooth: newProcedure.tooth || "-",
-        diagnosis: newProcedure.diagnosis || "",
-        date: tempTreatment.date,
-        cost: tempTreatment.cost,
-        paid: tempTreatment.paid,
-      }),
-    });
-
-    // 🔔 Notification للسيرفر (Badge Style)
-    await fetch(`${API_URL}/notifications`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: `
-          ➕ تم إضافة إجراء 
-          <span style="
-            background:#fef3c7;
-            color:#92400e;
-            padding:3px 10px;
-            border-radius:999px;
-            font-weight:700;
-            display:inline-block;
-            margin:0 4px;
-          ">
-            ${procedureType}
-          </span>
-          (سن 
-          <span style="
-            background:#fee2e2;
-            color:#991b1b;
-            padding:3px 8px;
-            border-radius:999px;
-            font-weight:700;
-            display:inline-block;
-            margin:0 4px;
-          ">
-            ${toothNumber}
-          </span>)
-          للمريض 
-          <span style="
-            background:#ccfbf1;
-            color:#0f766e;
-            padding:3px 12px;
-            border-radius:999px;
-            font-weight:700;
-            display:inline-block;
-            margin-right:6px;
-          ">
-            ${patientName}
-          </span>
-        `,
-        role: "all",
-      }),
-    });
+    // 2️⃣ تحديث قائمة المرضى
+    setPatients(prev =>
+      prev.map(p =>
+        p.id === editingPatient.id
+          ? {
+              ...p,
+              treatmentRecords: [newTreatment, ...(p.treatmentRecords || [])],
+            }
+          : p
+      )
+    );
 
     // 🔔 Toast محلي
     notify(`➕ تم إضافة إجراء ${procedureType} (سن ${toothNumber}) للمريض ${patientName}`);
@@ -1211,8 +1101,6 @@ const toothNumber =
       paid: 0,
       payments: [],
     });
-
-    await loadPatients();
 
   } catch (err) {
     console.error("خطأ في إضافة الإجراء", err);
@@ -1244,14 +1132,13 @@ const handleAddInstallment = async (recordIndex: number) => {
   }
 
   try {
-    // 1️⃣ دفعة مؤقتة (UI only)
     const newTransaction: PaymentTransaction = {
       id: `temp-${Date.now()}`,
       amount: payment.amount,
       date: payment.date,
     };
 
-    // 2️⃣ تحديث فوري في المودال
+    // 1️⃣ تحديث المريض المفتوح في المودال
     setEditingPatient(prev => {
       if (!prev) return prev;
 
@@ -1271,47 +1158,37 @@ const handleAddInstallment = async (recordIndex: number) => {
       return { ...prev, treatmentRecords: updatedRecords };
     });
 
-    // 3️⃣ إرسال الدفعة للسيرفر
-    await fetch(`${API_URL}/treatments/${record.id}/payments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amount: payment.amount,
-        date: payment.date,
-      }),
-    });
+    // 2️⃣ تحديث قائمة المرضى
+    setPatients(prev =>
+      prev.map(p => {
+        if (p.id !== editingPatient.id) return p;
 
-    // 🔔 Notification للسيرفر (لكل الشاشات)
-    
-await fetch(`${API_URL}/notifications`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    message: `💰 تم تسجيل دفعة بقيمة 
-      <span style="color:#a10e90;font-weight:700">
-        ${payment.amount} ج.م
-      </span>
-      للمريض 
-      <span style="color:#a10e90;font-weight:700">
-        ${editingPatient.name}
-      </span>`,
-    role: "all",
-  }),
-});
+        const updatedRecords = p.treatmentRecords.map((r, idx) =>
+          idx === recordIndex
+            ? {
+                ...r,
+                payments: [...(r.payments || []), newTransaction],
+                paid: [...(r.payments || []), newTransaction].reduce(
+                  (sum, p) => sum + p.amount,
+                  0
+                ),
+              }
+            : r
+        );
 
+        return { ...p, treatmentRecords: updatedRecords };
+      })
+    );
 
     // 🔔 Notification محلي
     notify("💰 تم تسجيل دفعة التحصيل بنجاح");
 
-    // 4️⃣ مسح المدخل للإجراء ده بس
+    // 3️⃣ مسح المدخل للإجراء ده بس
     setTempPayments(prev => {
       const copy = { ...prev };
       delete copy[record.id];
       return copy;
     });
-
-    // 5️⃣ مزامنة نهائية (مصدر واحد للداتا)
-    await loadPatients();
 
   } catch (err) {
     console.error("خطأ في تسجيل دفعة التحصيل", err);
@@ -1352,18 +1229,27 @@ const handleBulkDelete = async () => {
 };
 
 
-  const handleUpdatePayment = () => {
-    if (!editingPatient) return;
-    const { total, paid } = calculatePatientTotals(editingPatient.treatmentRecords);
-    const updatedPatient = {
-      ...editingPatient,
-      totalAmount: total,
-      paidAmount: paid
-    };
-    setPatients(prev => prev.map(p => p.id === updatedPatient.id ? updatedPatient : p));
-    setIsPaymentModalOpen(false);
-    setEditingPatient(null);
+const handleUpdatePayment = () => {
+  if (!editingPatient) return;
+
+  const { total, paid } = calculatePatientTotals(editingPatient.treatmentRecords);
+
+  const updatedPatient = {
+    ...editingPatient,
+    totalAmount: total,
+    paidAmount: paid
   };
+
+  // تحديث قائمة المرضى
+  setPatients(prev =>
+    prev.map(p => (p.id === updatedPatient.id ? updatedPatient : p))
+  );
+
+  // تحديث المريض المفتوح (لو لسه موجود)
+  setEditingPatient(updatedPatient);
+
+  setIsPaymentModalOpen(false);
+};
 
   const fetchInsight = async (p: Patient) => {
     setLoadingInsight(true);
